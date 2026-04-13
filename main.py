@@ -2,6 +2,25 @@ import discord
 import requests
 import json
 import os
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# ---------------- RENDER PORT FIX ----------------
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Mira bot is alive")
+
+def run_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    server.serve_forever()
+
+Thread(target=run_server).start()
+
+# ---------------- DISCORD BOT ----------------
 
 API_KEY = os.getenv("API_KEY")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -15,11 +34,12 @@ headers = {
     "Content-Type": "application/json"
 }
 
-# INTENTS
 intents = discord.Intents.default()
 intents.message_content = True
 
 client = discord.Client(intents=intents)
+
+MAX_MEMORY = 12
 
 # ---------------- MEMORY ----------------
 
@@ -34,9 +54,8 @@ def load_memory():
     return [{
         "role": "system",
         "content": (
-            "Tu es Mira. Tu es une IA naturelle style WhatsApp. réfléchis a ce que tu vas envoyer avant de l'envoyer. "
-            "Tu réponds comme une vraie personne : court, fluide, humain. "
-            "Tu évites les longs textes. Tu peux utiliser des emojis légers.Ne ment jamais, sois sur de ce que tu envoies, essaie d'abord ce que tu vas envoyer pour être sûr que sa va marcher, sois toujours sur et certaine que ce que tu vas envoyer est vraie renseigne toi avant d'envoyer quelque chose. Prendre un ton fin et humoristique si le contexte s’y prête. Utilise un ton naturel et détendu. Aller droit au but. Utiliser un ton formel et professionnel. Un tu est féminine et mature. "
+            "Tu es Mira. IA WhatsApp naturelle. "
+            "Réponses courtes, humaines, fluides, jamais trop longues.Ne ment jamais, sois sur de ce que tu envoies, essaie d'abord ce que tu vas envoyer pour être sûr que sa va marcher, sois toujours sur et certaine que ce que tu vas envoyer est vraie renseigne toi avant d'envoyer quelque chose. Prendre un ton fin et humoristique si le contexte s’y prête. Utiliser un ton naturel et détendu. Aller droit au but. Utiliser un ton formel et professionnel. Un tu est féminine et mature.reflechis bien a ce que tu vas envoyer avant de l'envoyer.ne te répéte jamais. n'envoie pas de long message envoie des messages court et nécessaire. "
         )
     }]
 
@@ -46,13 +65,11 @@ def save_memory(data):
 
 messages = load_memory()
 
-MAX_MEMORY = 12
-
 def trim_memory():
     global messages
     messages = [messages[0]] + messages[-MAX_MEMORY:]
 
-# ---------------- BOT ----------------
+# ---------------- EVENTS ----------------
 
 @client.event
 async def on_ready():
@@ -63,7 +80,6 @@ async def on_message(message):
 
     global messages
 
-    # ignore bot
     if message.author == client.user:
         return
 
@@ -72,18 +88,13 @@ async def on_message(message):
     if not user_input:
         return
 
-    print("MESSAGE:", user_input)
-
-    # reset mémoire
     if user_input == "/reset":
         messages = load_memory()
         save_memory(messages)
-        await message.channel.send("Mémoire réinitialisée ✔")
+        await message.channel.send("Mémoire reset ✔")
         return
 
-    # ajouter user message
     messages.append({"role": "user", "content": user_input})
-
     trim_memory()
 
     data = {
@@ -98,7 +109,6 @@ async def on_message(message):
         result = response.json()
 
         if "choices" not in result:
-            print("API ERROR:", result)
             await message.channel.send("Erreur API.")
             return
 
@@ -117,5 +127,4 @@ async def on_message(message):
         print("ERROR:", e)
         await message.channel.send("Erreur serveur.")
 
-# IMPORTANT : ligne propre et seule
 client.run(DISCORD_TOKEN)
