@@ -21,8 +21,6 @@ intents.message_content = True
 
 client = discord.Client(intents=intents)
 
-MAX_MEMORY = 12
-
 # ---------------- MEMORY ----------------
 
 def load_memory():
@@ -36,11 +34,9 @@ def load_memory():
     return [{
         "role": "system",
         "content": (
-            "Tu es Mira. Tu es une IA féminine ,qui parle comme une vraie personne sur WhatsApp. "
-            "Tu es naturelle, fluide et expressive. "
-            "Tu utilises des phrases courtes, parfois des emojis discrets. "
-            "Tu évites les longues réponses et tu restes humaine et élégante. "
-            "Tu ne répètes pas inutilement.tu est respectueuse."
+            "Tu es Mira. Tu es une IA naturelle style WhatsApp. réfléchis a ce que tu vas envoyer avant de l'envoyer. "
+            "Tu réponds comme une vraie personne : court, fluide, humain. "
+            "Tu évites les longs textes. Tu peux utiliser des emojis légers.Ne ment jamais, sois sur de ce que tu envoies, essaie d'abord ce que tu vas envoyer pour être sûr que sa va marcher, sois toujours sur et certaine que ce que tu vas envoyer est vraie renseigne toi avant d'envoyer quelque chose. Prendre un ton fin et humoristique si le contexte s’y prête. Utilise un ton naturel et détendu. Aller droit au but. Utiliser un ton formel et professionnel. Un tu est féminine et mature. "
         )
     }]
 
@@ -50,11 +46,13 @@ def save_memory(data):
 
 messages = load_memory()
 
+MAX_MEMORY = 12
+
 def trim_memory():
     global messages
     messages = [messages[0]] + messages[-MAX_MEMORY:]
 
-# ---------------- EVENTS ----------------
+# ---------------- BOT ----------------
 
 @client.event
 async def on_ready():
@@ -74,16 +72,16 @@ async def on_message(message):
     if not user_input:
         return
 
-    print("MESSAGE REÇU:", user_input)
+    print("MESSAGE:", user_input)
 
-    # RESET MEMORY
+    # reset mémoire
     if user_input == "/reset":
         messages = load_memory()
         save_memory(messages)
         await message.channel.send("Mémoire réinitialisée ✔")
         return
 
-    # ajouter user
+    # ajouter user message
     messages.append({"role": "user", "content": user_input})
 
     trim_memory()
@@ -107,7 +105,6 @@ async def on_message(message):
         reply = result["choices"][0]["message"]["content"]
 
         messages.append({"role": "assistant", "content": reply})
-
         trim_memory()
         save_memory(messages)
 
@@ -120,17 +117,5 @@ async def on_message(message):
         print("ERROR:", e)
         await message.channel.send("Erreur serveur.")
 
-client.run(DISCORD_TOKEN)essages.append({"role": "assistant", "content": reply})
-        save_memory(messages)
-
-        # sécurité longueur Discord
-        if len(reply) > 2000:
-            reply = reply[:1990] + "..."
-
-        await message.channel.send(reply)
-
-    except Exception as e:
-        print("ERREUR:", e)
-        await message.channel.send("Erreur serveur ou API.")
-
+# IMPORTANT : ligne propre et seule
 client.run(DISCORD_TOKEN)
