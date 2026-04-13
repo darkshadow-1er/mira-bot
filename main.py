@@ -6,7 +6,7 @@ import time
 from threading import Thread
 from flask import Flask
 
-# ---------------- ANTI-SLEEP (RENDER) ----------------
+# ---------------- ANTI-SLEEP ----------------
 
 app = Flask(__name__)
 
@@ -19,8 +19,7 @@ def run_web():
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    t = Thread(target=run_web)
-    t.start()
+    Thread(target=run_web).start()
 
 def auto_ping():
     url = os.getenv("RENDER_EXTERNAL_URL")
@@ -30,7 +29,7 @@ def auto_ping():
                 requests.get(url)
         except:
             pass
-        time.sleep(300)  # 5 minutes
+        time.sleep(300)
 
 keep_alive()
 Thread(target=auto_ping).start()
@@ -84,9 +83,9 @@ def get_user_memory(user_id):
             "role": "system",
             "content": (
                 "Tu es Mira, une IA Discord féminine naturelle. "
-                "Tu parles comme une vraie personne (style WhatsApp). "
-                "Réponses courtes, sauf quand il faut envoyer un message long qui avait besoin de l'être comme une histoire si tu raconte quelque chose raconte le jusqu'à la fin , humaines, fluides. "
-                "Tu es expressive, légère et intelligente.Ne ment jamais, sois sur de ce que tu envoies, essaie d'abord ce que tu vas envoyer pour être sûr que sa va marcher, sois toujours sur et certaine que ce que tu vas envoyer est vraie renseigne toi avant d'envoyer quelque chose. Prendre un ton fin et humoristique si le contexte s’y prête. Utiliser un ton naturel et détendu. Aller droit au but. Utiliser un ton formel et professionnel. Un tu est féminine et mature, envoie un long message si nécessaire, réfléchis toujours a ce que tu vas envoyer avant de l'envoyer ne confonds pas les gens tu sais reconnaître différents personne dans un serveur."
+                "Tu parles comme une vraie personne (style Discord). "
+                "Réponses courtes MAIS si tu racontes une histoire, tu la termines toujours. "
+                "Tu es expressive, humaine et fluide. tu ne fais pas d'erreur. Ne ment jamais, sois sur de ce que tu envoies, essaie d'abord ce que tu vas envoyer pour être sûr que sa va marcher, sois toujours sur et certaine que ce que tu vas envoyer est vraie renseigne toi avant d'envoyer quelque chose. Prendre un ton fin et humoristique si le contexte s’y prête. Utiliser un ton naturel et détendu. Aller droit au but. Utiliser un ton formel et professionnel. Un tu est féminine et mature. "
             )
         }]
 
@@ -111,17 +110,15 @@ async def on_message(message):
     user_id = str(message.author.id)
     content = message.content.strip()
 
-    # DM = toujours actif
+    # DM
     if isinstance(message.channel, discord.DMChannel):
         user_input = content
-
-    # serveur = seulement avec "mira"
     else:
         if not content.lower().startswith(PREFIX):
             return
         user_input = content[len(PREFIX):].strip()
 
-    # cooldown anti spam
+    # cooldown
     now = time.time()
     if user_id in last_used and now - last_used[user_id] < COOLDOWN:
         return
@@ -131,7 +128,7 @@ async def on_message(message):
         await message.channel.send("Oui ? 😊")
         return
 
-    # reset mémoire
+    # reset
     if user_input.lower() == "/reset":
         memory[user_id] = memory[user_id][:1]
         save_memory(memory)
@@ -146,12 +143,12 @@ async def on_message(message):
     data = {
         "model": "llama-3.1-8b-instant",
         "messages": user_memory,
-        "max_tokens": 120,
+        "max_tokens": 300,
         "temperature": 0.9
     }
 
     try:
-        response = requests.post(url, headers=headers, json=data, timeout=15)
+        response = requests.post(url, headers=headers, json=data, timeout=20)
         result = response.json()
 
         if "choices" not in result:
@@ -160,12 +157,36 @@ async def on_message(message):
 
         reply = result["choices"][0]["message"]["content"]
 
-        if len(reply) > 300:
-            reply = reply[:300] + "..."
+        # ---------------- CONTINUATION AUTO ----------------
+        if not reply.endswith((".", "!", "?", "…")):
+            user_memory.append({"role": "assistant", "content": reply})
 
+            continuation = requests.post(
+                url,
+                headers=headers,
+                json={
+                    "model": "llama-3.1-8b-instant",
+                    "messages": user_memory + [{"role": "user", "content": "continue"}],
+                    "max_tokens": 200,
+                    "temperature": 0.9
+                },
+                timeout=15
+            ).json()
+
+            try:
+                extra = continuation["choices"][0]["message"]["content"]
+                reply += " " + extra
+            except:
+                pass
+
+        # ---------------- SAVE ----------------
         user_memory.append({"role": "assistant", "content": reply})
         trim_memory(user_id)
         save_memory(memory)
+
+        # limiter taille discord
+        if len(reply) > 2000:
+            reply = reply[:1990] + "..."
 
         await message.channel.send(reply)
 
