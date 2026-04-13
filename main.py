@@ -2,30 +2,47 @@ import discord
 import requests
 import json
 import os
+import time
 from threading import Thread
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from flask import Flask
 
-# ---------------- RENDER PORT FIX ----------------
+# ---------------- ANTI-SLEEP (RENDER) ----------------
 
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Mira bot is alive")
+app = Flask(__name__)
 
-def run_server():
+@app.route('/')
+def home():
+    return "Mira is alive"
+
+def run_web():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), Handler)
-    server.serve_forever()
+    app.run(host='0.0.0.0', port=port)
 
-Thread(target=run_server).start()
+def keep_alive():
+    t = Thread(target=run_web)
+    t.start()
 
-# ---------------- DISCORD BOT ----------------
+def auto_ping():
+    url = os.getenv("RENDER_EXTERNAL_URL")
+    while True:
+        try:
+            if url:
+                requests.get(url)
+        except:
+            pass
+        time.sleep(300)  # 5 minutes
+
+keep_alive()
+Thread(target=auto_ping).start()
+
+# ---------------- CONFIG ----------------
 
 API_KEY = os.getenv("API_KEY")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
-FILE_NAME = "mira_memory.json"
+MEMORY_FILE = "memory.json"
+PREFIX = "mira"
+COOLDOWN = 2
 
 url = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -39,92 +56,121 @@ intents.message_content = True
 
 client = discord.Client(intents=intents)
 
-MAX_MEMORY = 12
+MAX_MEMORY = 10
+last_used = {}
 
 # ---------------- MEMORY ----------------
 
 def load_memory():
-    if os.path.exists(FILE_NAME):
+    if os.path.exists(MEMORY_FILE):
         try:
-            with open(FILE_NAME, "r") as f:
+            with open(MEMORY_FILE, "r") as f:
                 return json.load(f)
         except:
             pass
-
-    return [{
-        "role": "system",
-        "content": (
-            "Tu es Mira. IA discord naturelle. ton créateur c'est ◥꧁ 𝙳𝙰𝚁𝙺★𝚃𝙴𝙼𝙿𝙴𝚂𝚃 ꧂◤. "
-            "Réponses courtes, humaines, fluides, jamais trop longues.Ne ment jamais, sois sur de ce que tu envoies, essaie d'abord ce que tu vas envoyer pour être sûr que sa va marcher, sois toujours sur et certaine que ce que tu vas envoyer est vraie renseigne toi avant d'envoyer quelque chose. Prendre un ton fin et humoristique si le contexte s’y prête. Utiliser un ton naturel et détendu. Aller droit au but. Utiliser un ton formel et professionnel. Un tu est féminine et mature.reflechis bien a ce que tu vas envoyer avant de l'envoyer.ne te répéte jamais. n'envoie pas de long message envoie des messages court et nécessaire. "
-        )
-    }]
+    return {}
 
 def save_memory(data):
-    with open(FILE_NAME, "w") as f:
+    with open(MEMORY_FILE, "w") as f:
         json.dump(data, f)
 
-messages = load_memory()
+memory = load_memory()
 
-def trim_memory():
-    global messages
-    messages = [messages[0]] + messages[-MAX_MEMORY:]
+def get_user_memory(user_id):
+    user_id = str(user_id)
 
-# ---------------- EVENTS ----------------
+    if user_id not in memory:
+        memory[user_id] = [{
+            "role": "system",
+            "content": (
+                "Tu es Mira, une IA Discord féminine naturelle. "
+                "Tu parles comme une vraie personne (style WhatsApp). "
+                "Réponses courtes, humaines, fluides. "
+                "Tu es expressive, légère et intelligente."
+            )
+        }]
+
+    return memory[user_id]
+
+def trim_memory(user_id):
+    user_id = str(user_id)
+    memory[user_id] = [memory[user_id][0]] + memory[user_id][-MAX_MEMORY:]
+
+# ---------------- BOT ----------------
 
 @client.event
 async def on_ready():
-    print(f"Connecté en tant que {client.user}")
+    print(f"🔥 Mira active : {client.user}")
 
 @client.event
 async def on_message(message):
 
-    global messages
-
     if message.author == client.user:
         return
 
-    user_input = message.content.strip()
+    user_id = str(message.author.id)
+    content = message.content.strip()
+
+    # DM = toujours actif
+    if isinstance(message.channel, discord.DMChannel):
+        user_input = content
+
+    # serveur = seulement avec "mira"
+    else:
+        if not content.lower().startswith(PREFIX):
+            return
+        user_input = content[len(PREFIX):].strip()
+
+    # cooldown anti spam
+    now = time.time()
+    if user_id in last_used and now - last_used[user_id] < COOLDOWN:
+        return
+    last_used[user_id] = now
 
     if not user_input:
+        await message.channel.send("Oui ? 😊")
         return
 
-    if user_input == "/reset":
-        messages = load_memory()
-        save_memory(messages)
+    # reset mémoire
+    if user_input.lower() == "/reset":
+        memory[user_id] = memory[user_id][:1]
+        save_memory(memory)
         await message.channel.send("Mémoire reset ✔")
         return
 
-    messages.append({"role": "user", "content": user_input})
-    trim_memory()
+    user_memory = get_user_memory(user_id)
+
+    user_memory.append({"role": "user", "content": user_input})
+    trim_memory(user_id)
 
     data = {
         "model": "llama-3.1-8b-instant",
-        "messages": messages,
-        "max_tokens": 180,
-        "temperature": 0.8
+        "messages": user_memory,
+        "max_tokens": 120,
+        "temperature": 0.9
     }
 
     try:
-        response = requests.post(url, headers=headers, json=data, timeout=20)
+        response = requests.post(url, headers=headers, json=data, timeout=15)
         result = response.json()
 
         if "choices" not in result:
-            await message.channel.send("Erreur API.")
+            await message.channel.send("Hmm... bug 😅")
             return
 
         reply = result["choices"][0]["message"]["content"]
 
-        messages.append({"role": "assistant", "content": reply})
-        trim_memory()
-        save_memory(messages)
+        if len(reply) > 300:
+            reply = reply[:300] + "..."
 
-        if len(reply) > 2000:
-            reply = reply[:1990] + "..."
+        user_memory.append({"role": "assistant", "content": reply})
+        trim_memory(user_id)
+        save_memory(memory)
 
         await message.channel.send(reply)
 
     except Exception as e:
         print("ERROR:", e)
-        await message.channel.send("Erreur serveur.")
+        await message.channel.send("Petit bug... 😅")
 
 client.run(DISCORD_TOKEN)
