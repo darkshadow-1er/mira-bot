@@ -6,42 +6,29 @@ import time
 from threading import Thread
 from flask import Flask
 
-# ---------------- ANTI-SLEEP ----------------
+# ---------------- WEB KEEP ALIVE ----------------
 
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Mira is alive"
+    return "Mira Elite is alive"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-def keep_alive():
-    Thread(target=run_web).start()
-
-def auto_ping():
-    url = os.getenv("RENDER_EXTERNAL_URL")
-    while True:
-        try:
-            if url:
-                requests.get(url)
-        except:
-            pass
-        time.sleep(300)
-
-keep_alive()
-Thread(target=auto_ping).start()
+Thread(target=run_web).start()
 
 # ---------------- CONFIG ----------------
 
 API_KEY = os.getenv("API_KEY")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
-MEMORY_FILE = "memory.json"
 PREFIX = "mira"
+MEMORY_FILE = "memory.json"
 COOLDOWN = 2
+MAX_MEMORY = 6
 
 url = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -50,15 +37,13 @@ headers = {
     "Content-Type": "application/json"
 }
 
-intents = discord.Intents.default()
-intents.message_content = True
-
+intents = discord.Intents.all()
 client = discord.Client(intents=intents)
 
-MAX_MEMORY = 10
+memory = {}
 last_used = {}
 
-# ---------------- MEMORY ----------------
+# ---------------- MEMORY SMART ----------------
 
 def load_memory():
     if os.path.exists(MEMORY_FILE):
@@ -69,54 +54,158 @@ def load_memory():
             pass
     return {}
 
-def save_memory(data):
+def save_memory():
     with open(MEMORY_FILE, "w") as f:
-        json.dump(data, f)
+        json.dump(memory, f)
 
 memory = load_memory()
 
-def get_user_memory(user_id):
+def base_prompt():
+    return {
+        "role": "system",
+        "content": (
+            "Tu es Mira, une IA Discord féminine, calme et intelligente. "
+            "Tu écris en français correct, sans faute. "
+            "Tu ne répètes jamais. "
+            "Tu réponds uniquement au message actuel. "
+            "Tu ne ramènes jamais d’anciens sujets sans raison. "
+            "Tu es naturelle, concise et humaine."
+        )
+    }
+
+def get_memory(user_id):
     user_id = str(user_id)
 
     if user_id not in memory:
-        memory[user_id] = [{
-            "role": "system",
-            "content": (
-                "Tu es Mira, une IA Discord féminine naturelle. "
-                "Tu parles comme une vraie personne (style Discord). "
-                "Réponses courtes MAIS si tu racontes une histoire, tu la termines toujours. "
-                "Tu es expressive, humaine et fluide. tu ne fais pas d'erreur. Ne ment jamais, sois sur de ce que tu envoies, essaie d'abord ce que tu vas envoyer pour être sûr que sa va marcher, sois toujours sur et certaine que ce que tu vas envoyer est vraie renseigne toi avant d'envoyer quelque chose. Prendre un ton fin et humoristique si le contexte s’y prête. Utiliser un ton naturel et détendu. Aller droit au but. Utiliser un ton formel et professionnel. Un tu est féminine et mature. "
-            )
-        }]
+        memory[user_id] = {
+            "messages": [base_prompt()],
+            "last_topic": ""
+        }
 
     return memory[user_id]
 
-def trim_memory(user_id):
+def clean_memory(user_id):
     user_id = str(user_id)
-    memory[user_id] = [memory[user_id][0]] + memory[user_id][-MAX_MEMORY:]
+    data = memory[user_id]
+
+    data["messages"] = [data["messages"][0]] + data["messages"][-MAX_MEMORY:]
+
+# ---------------- FILTRE RAPIDE ----------------
+
+def quick_reply(msg):
+    msg = msg.lower().strip()
+
+    if msg in ["salut", "cc", "yo", "hello"]:
+        return "Salut 🙂"
+
+    if msg in ["ça va", "cv"]:
+        return "Oui ça va, et toi ?"
+
+    return None
+
+# ---------------- IA ----------------
+
+def ask_ai(messages):
+    data = {
+        "model": "llama-3.1-8b-instant",
+        "messages": messages,
+        "temperature": 0.4,
+        "max_tokens": 200
+    }
+
+    r = requests.post(url, headers=headers, json=data, timeout=20)
+    res = r.json()
+
+    if "choices" not in res:
+        return "Petit bug 😅"
+
+    return res["choices"][0]["message"]["content"].strip()
+
+# ---------------- COMMANDES ----------------
+
+async def handle_command(message, cmd, args):
+
+    # 🔧 ADMIN CLEAR
+    if cmd == "clear":
+        if message.author.guild_permissions.manage_messages:
+            await message.channel.purge(limit=int(args[0]) if args else 10)
+            await message.channel.send("Nettoyage effectué ✔", delete_after=3)
+        return True
+
+    # 👢 KICK
+    if cmd == "kick":
+        if message.author.guild_permissions.kick_members:
+            if message.mentions:
+                await message.mentions[0].kick()
+                await message.channel.send("Utilisateur expulsé ✔")
+        return True
+
+    # 🔨 BAN
+    if cmd == "ban":
+        if message.author.guild_permissions.ban_members:
+            if message.mentions:
+                await message.mentions[0].ban()
+                await message.channel.send("Utilisateur banni ✔")
+        return True
+
+    # 🧠 RESET MEMOIRE
+    if cmd == "reset":
+        uid = str(message.author.id)
+        memory[uid] = {
+            "messages": [base_prompt()],
+            "last_topic": ""
+        }
+        save_memory()
+        await message.channel.send("Mémoire effacée ✔")
+        return True
+
+    # 🎭 MODE RP
+    if cmd == "rp":
+        uid = str(message.author.id)
+        memory[uid]["messages"][0]["content"] += " Tu es immersive et expressive (mode RP activé)."
+        await message.channel.send("Mode RP activé 🎭")
+        return True
+
+    # 📜 HELP
+    if cmd == "help":
+        await message.channel.send(
+            "**Commandes Mira :**\n"
+            "mira clear [nb]\n"
+            "mira kick @user\n"
+            "mira ban @user\n"
+            "mira reset\n"
+            "mira rp\n"
+        )
+        return True
+
+    return False
 
 # ---------------- BOT ----------------
 
 @client.event
 async def on_ready():
-    print(f"🔥 Mira active : {client.user}")
+    print(f"🔥 Mira Elite prête : {client.user}")
 
 @client.event
 async def on_message(message):
 
-    if message.author == client.user:
+    if message.author.bot:
         return
 
-    user_id = str(message.author.id)
     content = message.content.strip()
+    user_id = str(message.author.id)
 
-    # DM
-    if isinstance(message.channel, discord.DMChannel):
-        user_input = content
-    else:
-        if not content.lower().startswith(PREFIX):
-            return
-        user_input = content[len(PREFIX):].strip()
+    # PREFIX
+    if not content.lower().startswith(PREFIX):
+        return
+
+    parts = content[len(PREFIX):].strip().split()
+    if not parts:
+        await message.channel.send("Oui ?")
+        return
+
+    cmd = parts[0].lower()
+    args = parts[1:]
 
     # cooldown
     now = time.time()
@@ -124,74 +213,41 @@ async def on_message(message):
         return
     last_used[user_id] = now
 
-    if not user_input:
-        await message.channel.send("Oui ? 😊")
+    # COMMANDES
+    if await handle_command(message, cmd, args):
         return
 
-    # reset
-    if user_input.lower() == "/reset":
-        memory[user_id] = memory[user_id][:1]
-        save_memory(memory)
-        await message.channel.send("Mémoire reset ✔")
+    user_input = " ".join(parts)
+
+    # réponse rapide
+    quick = quick_reply(user_input)
+    if quick:
+        await message.channel.send(quick)
         return
 
-    user_memory = get_user_memory(user_id)
+    # mémoire intelligente
+    data = get_memory(user_id)
 
-    user_memory.append({"role": "user", "content": user_input})
-    trim_memory(user_id)
+    # 🔥 détection nouveau sujet simple
+    if len(user_input.split()) < 4:
+        data["messages"] = [data["messages"][0]]
 
-    data = {
-        "model": "llama-3.1-8b-instant",
-        "messages": user_memory,
-        "max_tokens": 300,
-        "temperature": 0.9
-    }
+    data["messages"].append({"role": "user", "content": user_input})
+    clean_memory(user_id)
 
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=20)
-        result = response.json()
+    reply = ask_ai(data["messages"])
 
-        if "choices" not in result:
-            await message.channel.send("Hmm... bug 😅")
-            return
+    # anti répétition
+    if data["messages"][-1]["content"] == reply:
+        reply = "Je reformule : " + reply
 
-        reply = result["choices"][0]["message"]["content"]
+    data["messages"].append({"role": "assistant", "content": reply})
 
-        # ---------------- CONTINUATION AUTO ----------------
-        if not reply.endswith((".", "!", "?", "…")):
-            user_memory.append({"role": "assistant", "content": reply})
+    save_memory()
 
-            continuation = requests.post(
-                url,
-                headers=headers,
-                json={
-                    "model": "llama-3.1-8b-instant",
-                    "messages": user_memory + [{"role": "user", "content": "continue"}],
-                    "max_tokens": 200,
-                    "temperature": 0.9
-                },
-                timeout=15
-            ).json()
+    if len(reply) > 2000:
+        reply = reply[:1990] + "..."
 
-            try:
-                extra = continuation["choices"][0]["message"]["content"]
-                reply += " " + extra
-            except:
-                pass
-
-        # ---------------- SAVE ----------------
-        user_memory.append({"role": "assistant", "content": reply})
-        trim_memory(user_id)
-        save_memory(memory)
-
-        # limiter taille discord
-        if len(reply) > 2000:
-            reply = reply[:1990] + "..."
-
-        await message.channel.send(reply)
-
-    except Exception as e:
-        print("ERROR:", e)
-        await message.channel.send("Petit bug... 😅")
+    await message.channel.send(reply)
 
 client.run(DISCORD_TOKEN)
