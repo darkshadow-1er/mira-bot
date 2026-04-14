@@ -3,8 +3,10 @@ import requests
 import json
 import os
 import time
+import asyncio
 from threading import Thread
 from flask import Flask
+from collections import deque
 
 # ---------------- WEB KEEP ALIVE ----------------
 
@@ -30,6 +32,8 @@ MEMORY_FILE = "memory.json"
 COOLDOWN = 2
 MAX_MEMORY = 6
 
+API_DELAY = 1.2
+
 url = "https://api.groq.com/openai/v1/chat/completions"
 
 headers = {
@@ -43,7 +47,12 @@ client = discord.Client(intents=intents)
 memory = {}
 last_used = {}
 
-# ---------------- MEMORY SMART ----------------
+# ---------------- QUEUE ANTI-SPAM ----------------
+
+request_queue = deque()
+processing = False
+
+# ---------------- MEMORY ----------------
 
 def load_memory():
     if os.path.exists(MEMORY_FILE):
@@ -64,12 +73,12 @@ def base_prompt():
     return {
         "role": "system",
         "content": (
-            "Tu es Mira, une IA Discord féminine, calme et intelligente. "
-            "Tu écris en français correct, sans faute. "
+            "Tu es Mira, une IA Discord féminine calme et naturelle. "
+            "Tu écris en français parfait, sans faute. "
             "Tu ne répètes jamais. "
             "Tu réponds uniquement au message actuel. "
-            "Tu ne ramènes jamais d’anciens sujets sans raison. "
-            "Tu es naturelle, concise et humaine."
+            "Tu ne parles jamais d’anciens sujets sans demande. "
+            "Tu es concise, claire et humaine."
         )
     }
 
@@ -78,8 +87,7 @@ def get_memory(user_id):
 
     if user_id not in memory:
         memory[user_id] = {
-            "messages": [base_prompt()],
-            "last_topic": ""
+            "messages": [base_prompt()]
         }
 
     return memory[user_id]
@@ -106,75 +114,110 @@ def quick_reply(msg):
 # ---------------- IA ----------------
 
 def ask_ai(messages):
-    data = {
+    payload = {
         "model": "llama-3.1-8b-instant",
         "messages": messages,
         "temperature": 0.4,
-        "max_tokens": 200
+        "max_tokens": 150
     }
 
-    r = requests.post(url, headers=headers, json=data, timeout=20)
-    res = r.json()
+    response = requests.post(url, headers=headers, json=payload, timeout=20)
 
-    if "choices" not in res:
-        return "Petit bug 😅"
+    if response.status_code == 429:
+        return "RATE_LIMIT"
 
-    return res["choices"][0]["message"]["content"].strip()
+    result = response.json()
+
+    if "choices" not in result:
+        return "Bug IA 😅"
+
+    return result["choices"][0]["message"]["content"].strip()
+
+# ---------------- QUEUE WORKER ----------------
+
+async def process_queue():
+    global processing
+
+    if processing:
+        return
+
+    processing = True
+
+    while request_queue:
+        message, user_id, user_input = request_queue.popleft()
+
+        try:
+            data = get_memory(user_id)
+
+            if len(user_input.split()) < 4:
+                data["messages"] = [data["messages"][0]]
+
+            data["messages"].append({"role": "user", "content": user_input})
+            clean_memory(user_id)
+
+            reply = ask_ai(data["messages"])
+
+            if reply == "RATE_LIMIT":
+                await message.channel.send("Je vais trop vite 😅 attends un peu...")
+                await asyncio.sleep(3)
+                continue
+
+            if data["messages"][-1]["content"] == reply:
+                reply = "Je reformule : " + reply
+
+            data["messages"].append({"role": "assistant", "content": reply})
+            clean_memory(user_id)
+            save_memory()
+
+            if len(reply) > 2000:
+                reply = reply[:1990] + "..."
+
+            await message.channel.send(reply)
+
+            await asyncio.sleep(API_DELAY)
+
+        except Exception as e:
+            print("ERROR:", e)
+            await message.channel.send("Petit bug... 😅")
+
+    processing = False
 
 # ---------------- COMMANDES ----------------
 
 async def handle_command(message, cmd, args):
 
-    # 🔧 ADMIN CLEAR
     if cmd == "clear":
         if message.author.guild_permissions.manage_messages:
             await message.channel.purge(limit=int(args[0]) if args else 10)
-            await message.channel.send("Nettoyage effectué ✔", delete_after=3)
+            await message.channel.send("Nettoyage ✔", delete_after=3)
         return True
 
-    # 👢 KICK
     if cmd == "kick":
-        if message.author.guild_permissions.kick_members:
-            if message.mentions:
-                await message.mentions[0].kick()
-                await message.channel.send("Utilisateur expulsé ✔")
+        if message.author.guild_permissions.kick_members and message.mentions:
+            await message.mentions[0].kick()
+            await message.channel.send("Utilisateur expulsé ✔")
         return True
 
-    # 🔨 BAN
     if cmd == "ban":
-        if message.author.guild_permissions.ban_members:
-            if message.mentions:
-                await message.mentions[0].ban()
-                await message.channel.send("Utilisateur banni ✔")
+        if message.author.guild_permissions.ban_members and message.mentions:
+            await message.mentions[0].ban()
+            await message.channel.send("Utilisateur banni ✔")
         return True
 
-    # 🧠 RESET MEMOIRE
     if cmd == "reset":
         uid = str(message.author.id)
-        memory[uid] = {
-            "messages": [base_prompt()],
-            "last_topic": ""
-        }
+        memory[uid] = {"messages": [base_prompt()]}
         save_memory()
-        await message.channel.send("Mémoire effacée ✔")
+        await message.channel.send("Mémoire reset ✔")
         return True
 
-    # 🎭 MODE RP
-    if cmd == "rp":
-        uid = str(message.author.id)
-        memory[uid]["messages"][0]["content"] += " Tu es immersive et expressive (mode RP activé)."
-        await message.channel.send("Mode RP activé 🎭")
-        return True
-
-    # 📜 HELP
     if cmd == "help":
         await message.channel.send(
-            "**Commandes Mira :**\n"
+            "**Commandes :**\n"
             "mira clear [nb]\n"
             "mira kick @user\n"
             "mira ban @user\n"
             "mira reset\n"
-            "mira rp\n"
         )
         return True
 
@@ -195,7 +238,6 @@ async def on_message(message):
     content = message.content.strip()
     user_id = str(message.author.id)
 
-    # PREFIX
     if not content.lower().startswith(PREFIX):
         return
 
@@ -207,47 +249,22 @@ async def on_message(message):
     cmd = parts[0].lower()
     args = parts[1:]
 
-    # cooldown
     now = time.time()
     if user_id in last_used and now - last_used[user_id] < COOLDOWN:
         return
     last_used[user_id] = now
 
-    # COMMANDES
     if await handle_command(message, cmd, args):
         return
 
     user_input = " ".join(parts)
 
-    # réponse rapide
     quick = quick_reply(user_input)
     if quick:
         await message.channel.send(quick)
         return
 
-    # mémoire intelligente
-    data = get_memory(user_id)
-
-    # 🔥 détection nouveau sujet simple
-    if len(user_input.split()) < 4:
-        data["messages"] = [data["messages"][0]]
-
-    data["messages"].append({"role": "user", "content": user_input})
-    clean_memory(user_id)
-
-    reply = ask_ai(data["messages"])
-
-    # anti répétition
-    if data["messages"][-1]["content"] == reply:
-        reply = "Je reformule : " + reply
-
-    data["messages"].append({"role": "assistant", "content": reply})
-
-    save_memory()
-
-    if len(reply) > 2000:
-        reply = reply[:1990] + "..."
-
-    await message.channel.send(reply)
+    request_queue.append((message, user_id, user_input))
+    await process_queue()
 
 client.run(DISCORD_TOKEN)
